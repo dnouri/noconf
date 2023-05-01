@@ -1,7 +1,5 @@
 from contextlib import contextmanager
 from copy import deepcopy
-from functools import reduce
-import operator
 import os
 import threading
 import time
@@ -11,16 +9,9 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def config(request):
-    from noconf.conf import _config
-
-    orig = _config.copy()
-    _config.clear()
-    _config.initialized = False
-    request.addfinalizer(
-        lambda: (_config.clear(), _config.update(orig)))
-    return _config
-
+def load_cache_clear():
+    from noconf import load
+    load.cache_clear()
 
 
 class MyDummyComponent:
@@ -47,12 +38,6 @@ class BlockingDummy:
         time.sleep(0.1)
 
 
-class BadDummy:
-    def __init__(self):
-        from noconf.conf import get_config
-        self.cfg = get_config().copy()
-
-
 @contextmanager
 def cwd(path):
     before = os.getcwd()
@@ -65,32 +50,14 @@ def test_config_class_keyerror():
     from noconf.conf import Config
     with pytest.raises(KeyError) as e:
         Config({})['invalid']
-    assert "Maybe you forgot to set" in str(e.value)
+    assert "The required key 'invalid' was not found" in str(e.value)
 
 
-class TestInitializeConfig:
+class TestLoad:
     @pytest.fixture
-    def initialize_config(self):
-        from noconf.conf import initialize_config
-        return initialize_config
-
-    def test_extra(self, config, initialize_config):
-        config.clear()
-        initialize_config(two='three')
-        assert config['two'] == 'three'
-
-    def test_already_initialized(self, config, initialize_config):
-        config.clear()
-        config.initialized = True
-        with pytest.raises(RuntimeError):
-            initialize_config(two='three')
-
-
-class TestGetConfig:
-    @pytest.fixture
-    def get_config(self):
-        from noconf.conf import get_config
-        return get_config
+    def load(self):
+        from noconf.conf import load
+        return load
 
     @pytest.fixture
     def config1_fname(self, tmpdir):
@@ -110,72 +77,58 @@ class TestGetConfig:
         path.write("{'env': environ['ENV2']}")
         return str(path)
 
-    @pytest.fixture
-    def config3_fname(self, tmpdir):
-        path = tmpdir.join('config3.py')
-        path.write("""{
-            'bad': {
-                '!': 'noconf.test_conf.BadDummy'
-             }
-        }""")
-        return str(path)
+    def test_extras(self, load):
+        assert load(foo='bar')['foo'] == 'bar'
 
-    def test_extras(self, get_config):
-        assert get_config(foo='bar')['foo'] == 'bar'
-
-    def test_default_config(self, get_config, config1_fname, monkeypatch):
+    def test_default_config(self, load, config1_fname, monkeypatch):
         here = os.path.dirname(config1_fname)
         monkeypatch.setitem(os.environ, 'ENV1', 'one')
         with cwd(here):
-            config = get_config()
+            config = load()
         assert config['here'] == here
 
-    def test_variables(self, get_config, config1_fname, monkeypatch):
-        monkeypatch.setitem(os.environ, 'NOCONF_CONFIG', config1_fname)
+    def test_variables(self, load, config1_fname, monkeypatch):
         monkeypatch.setitem(os.environ, 'ENV1', 'one')
-        config = get_config()
+        config = load(config1_fname)
         assert config['env'] == 'one'
         assert config['here'] == os.path.dirname(config1_fname)
 
-    def test_multiple_files(self, get_config, config1_fname, config2_fname,
+    def test_multiple_files(self, load, config1_fname, config2_fname,
                             monkeypatch):
-        monkeypatch.setitem(os.environ, 'NOCONF_CONFIG',
-                            ','.join([config1_fname, config2_fname]))
         monkeypatch.setitem(os.environ, 'ENV1', 'one')
         monkeypatch.setitem(os.environ, 'ENV2', 'two')
-        config = get_config()
+        config = load((config1_fname, config2_fname))
         assert config['env'] == 'two'
         assert config['here'] == os.path.dirname(config1_fname)
 
-    def test_multithreaded(self, get_config, config1_fname, monkeypatch):
-        monkeypatch.setitem(os.environ, 'NOCONF_CONFIG', config1_fname)
+    def test_multithreaded(self, load, config1_fname, monkeypatch):
         monkeypatch.setitem(os.environ, 'ENV1', 'one')
 
-        cfg = {}
+        cfgs = {}
+        def load_me_config():
+            cfgs[threading.get_ident()] = load(config1_fname).copy()
 
-        def get_me_config():
-            cfg[threading.get_ident()] = get_config().copy()
-
-        threads = [threading.Thread(target=get_me_config) for i in range(2)]
+        threads = [threading.Thread(target=load_me_config) for i in range(20)]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
 
-        assert reduce(operator.eq, cfg.values())
+        cfg_values = list(cfgs.values())
+        for cfg in cfg_values[1:]:
+            assert cfg == cfg_values[0]
 
-    def test_pld_config_key(self, get_config, config1_fname, monkeypatch):
-        monkeypatch.setitem(os.environ, 'NOCONF_CONFIG', config1_fname)
+    def test_noconf_key(self, load, config1_fname, monkeypatch):
         monkeypatch.setitem(os.environ, 'ENV1', 'one')
-        config = get_config()
-        assert config['blocking'].__pld_config_key__ == 'blocking'
+        config = load(config1_fname)
+        assert config['blocking'].__noconf_key__ == 'blocking'
 
 
 class TestProcessConfig:
     @pytest.fixture
-    def process_config(self):
-        from noconf.conf import process_config
-        return process_config
+    def process_configs(self):
+        from noconf.conf import process_configs
+        return process_configs
 
     @pytest.fixture
     def config1(self):
@@ -257,8 +210,8 @@ C['myotherconstant'] = 13
                 },
             }
 
-    def test_config1(self, process_config, config1):
-        config = process_config(config1)
+    def test_config1(self, process_configs, config1):
+        config = process_configs(config1)
 
         assert config['myconstant'] == 42
 
@@ -300,8 +253,8 @@ C['myotherconstant'] = 13
         assert isinstance(mnl[0][0].arg2, dict)
         assert config['myotherconstant'] == 13
 
-    def test_config1_and_2(self, process_config, config1, config2):
-        config = process_config(config1, config2)
+    def test_config1_and_2(self, process_configs, config1, config2):
+        config = process_configs(config1, config2)
 
         assert config['mydict']['arg1'] == 3
 
@@ -332,34 +285,34 @@ C['myotherconstant'] = 13
                 },
             }
 
-    def test_copy_source_exists_with_default(self, process_config, config3):
+    def test_copy_source_exists_with_default(self, process_configs, config3):
         expected = deepcopy(config3)
         expected['second'] = expected['first']
-        got = process_config(config3)
+        got = process_configs(config3)
         assert got == expected
 
-    def test_copy_source_exists_no_default(self, process_config, config3):
+    def test_copy_source_exists_no_default(self, process_configs, config3):
         expected = deepcopy(config3)
         expected['second'] = expected['first']
         del config3['second']['__default__']
-        got = process_config(config3)
+        got = process_configs(config3)
         assert got == expected
 
-    def test_copy_source_missing_with_default(self, process_config, config3):
+    def test_copy_source_missing_with_default(self, process_configs, config3):
         expected = deepcopy(config3)
         expected['second'] = expected['second']['__default__']
         del expected['first']
         del config3['first']
-        got = process_config(config3)
+        got = process_configs(config3)
         assert got == expected
 
-    def test_copy_source_missing_no_default(self, process_config, config3):
+    def test_copy_source_missing_no_default(self, process_configs, config3):
         del config3['first']
         del config3['second']['__default__']
         with pytest.raises(KeyError):
-            process_config(config3)
+            process_configs(config3)
 
-    def test_initialize_config_logging(self, process_config):
+    def test_initialize_config_logging(self, process_configs):
         with patch('noconf.conf.dictConfig') as dictConfig:
-            process_config({'logging': 'yes, please'})
+            process_configs({'logging': 'yes, please'})
             dictConfig.assert_called_with('yes, please')

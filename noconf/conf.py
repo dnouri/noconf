@@ -1,22 +1,28 @@
 from copy import deepcopy
+from functools import cache
+from functools import wraps
 from importlib import import_module
-import logging
 from logging.config import dictConfig
 import os
 import sys
-import threading
+from threading import RLock
 
-
-NOCONF_CONFIG_ERROR = """
-  Maybe you forgot to set the environment variable NOCONF_CONFIG
-  to point to your Noconf configuration file?  If so, please
-  refer to the manual for more details.
-"""
 
 DEFAULT_CONFIG_FILE_LOCATIONS = (
     'noconf-config.py',
     os.path.join('etc', 'noconf-config.py'),
     )
+
+
+def synchronized(func):
+    lock = RLock()
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with lock:
+            return func(*args, **kwargs)
+    if hasattr(func, 'cache_clear'):
+        wrapper.cache_clear = func.cache_clear
+    return wrapper
 
 
 def resolve_dotted_name(dotted_name):
@@ -47,11 +53,9 @@ class Config(dict):
             return super(Config, self).__getitem__(name)
         except KeyError:
             raise KeyError(
-                "The required key '{}' was not found in your "
-                "configuration. {}".format(name, NOCONF_CONFIG_ERROR))
-
-
-_config = Config()
+                f"The required key '{name}' was not found in your "
+                "configuration."
+            )
 
 
 class ComponentHandler:
@@ -67,7 +71,7 @@ class ComponentHandler:
         factory = resolve_dotted_name(factory_dotted_name)
         component = factory(**specification)
         try:
-            component.__pld_config_key__ = name
+            component.__noconf_key__ = name
         except (AttributeError, ValueError):
             pass
         self.components.append(component)
@@ -77,10 +81,6 @@ class ComponentHandler:
         for component in self.components:
             if hasattr(component, 'initialize_component'):
                 component.initialize_component(self.config)
-
-
-class ComponentHandler2(ComponentHandler):
-    key = '__factory__'
 
 
 class CopyHandler:
@@ -223,11 +223,9 @@ def _run_config_handlers(config, handlers):
 def _initialize_logging(config):
     if 'logging' in config:
         dictConfig(config['logging'])
-    else:
-        logging.basicConfig(level=logging.DEBUG)
 
 
-def process_config(
+def process_configs(
     *configs,
     handlers0=_handlers_phase0,
     handlers1=_handlers_phase1,
@@ -249,44 +247,34 @@ def process_config(
     return config_final
 
 
-_get_config_lock = threading.RLock()
-
-
-def get_config(**extra):
-    with _get_config_lock:
-        config = _get_config(**extra)
-    return config
-
-
-def _get_config(**extra):
-    if not _config.initialized:
-        _config.update(extra)
-        _config.initialized = True
-
-        fnames = os.environ.get('NOCONF_CONFIG')
-        if fnames is None:
-            for fname in DEFAULT_CONFIG_FILE_LOCATIONS:
-                if os.path.exists(fname):  # pragma: no cover
-                    fnames = fname
-                    print("Using configuration at {}".format(fname))
-                    break
-
-        if fnames is not None:
-            configs = []
-            fnames = [fname.strip() for fname in fnames.split(',')]
-            for fname in fnames:
-                sys.path.insert(0, os.path.dirname(fname))
-                with open(fname) as f:
-                    config = eval(f.read(), {
-                        'environ': os.environ,
-                        'here': os.path.abspath(os.path.dirname(fname)),
-                        })
-                configs.append(config)
-            _config.update(process_config(_config, *configs))
-    return _config
-
-
-def initialize_config(**extra):
-    if _config.initialized:
-        raise RuntimeError("Configuration was already initialized")
-    return get_config(**extra)
+@synchronized
+@cache
+def load(
+    fnames=None,
+    **extra,
+):
+    if fnames is None:
+        for fname in DEFAULT_CONFIG_FILE_LOCATIONS:
+            if os.path.exists(fname):  # pragma: no cover
+                fnames = fname
+                print("Using configuration at {}".format(fname))
+                break
+        else:
+            if extra is None:
+                raise RuntimeError(
+                    "Could not determine configuration file to read from."
+                )
+            else:
+                fnames = []
+    configs = []
+    if isinstance(fnames, str):
+        fnames = [fname.strip() for fname in fnames.split(',')]
+    for fname in fnames:
+        sys.path.insert(0, os.path.dirname(fname))
+        with open(fname) as f:
+            config = eval(f.read(), {
+                'environ': os.environ,
+                'here': os.path.abspath(os.path.dirname(fname)),
+                })
+        configs.append(config)
+    return process_configs(*(configs + [extra]))
