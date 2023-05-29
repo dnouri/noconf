@@ -1,4 +1,5 @@
 from copy import deepcopy
+import functools
 from functools import cache
 from functools import wraps
 from importlib import import_module
@@ -23,6 +24,10 @@ def synchronized(func):
     if hasattr(func, 'cache_clear'):
         wrapper.cache_clear = func.cache_clear
     return wrapper
+
+
+def partial(func, *args, **kwargs):
+    return functools.partial(func, *args, **kwargs)
 
 
 def resolve_dotted_name(dotted_name):
