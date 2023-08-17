@@ -5,6 +5,7 @@ from functools import wraps
 from importlib import import_module
 from logging.config import dictConfig
 import os
+from pathlib import Path
 import sys
 from threading import RLock
 
@@ -274,6 +275,8 @@ def load(
     configs = []
     if isinstance(fnames, str):
         fnames = [fname.strip() for fname in fnames.split(',')]
+    elif isinstance(fnames, Path):
+        fnames = [fnames]
     for fname in fnames:
         sys.path.insert(0, os.path.dirname(fname))
         with open(fname) as f:

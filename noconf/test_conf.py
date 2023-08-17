@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from copy import deepcopy
 import os
+from pathlib import Path
 import threading
 import time
 from unittest.mock import patch
@@ -86,6 +87,12 @@ class TestLoad:
         with cwd(here):
             config = load()
         assert config['here'] == here
+
+    def test_load_with_path_object(self, load, config1_fname, monkeypatch):
+        path_object = Path(config1_fname)
+        monkeypatch.setitem(os.environ, 'ENV1', 'one')
+        config = load(path_object)
+        assert isinstance(config, dict)
 
     def test_variables(self, load, config1_fname, monkeypatch):
         monkeypatch.setitem(os.environ, 'ENV1', 'one')
