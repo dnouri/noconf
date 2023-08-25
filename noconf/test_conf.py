@@ -10,6 +10,12 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def doctest_namespace(doctest_namespace, tmp_path, monkeypatch):
+    doctest_namespace["folder"] = tmp_path
+    doctest_namespace["setenv"] = monkeypatch.setenv
+
+
+@pytest.fixture(autouse=True)
 def load_cache_clear():
     from noconf import load
     load.cache_clear()
